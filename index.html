@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <title>Nginx Config Normalizer — redirects + multilanguage</title>
+    <style>
+        body { font-family: monospace; background:#0e0e0e; color:#eaeaea; padding:20px; }
+        textarea { width:100%; height:320px; background:#161616; color:#a8ff60; border:1px solid #333; padding:10px; }
+        label { display:inline-block; margin-top:10px; }
+        input[type=text] { background:#111; color:#a8ff60; border:1px solid #333; padding:4px 8px; }
+        button { margin-top:10px; padding:8px 14px; background:#222; color:#a8ff60; border:1px solid #444; cursor:pointer; }
+        pre { background:#111; color:#a8ff60; padding:10px; border:1px solid #333; white-space:pre-wrap; margin-top:14px; }
+    </style>
+</head>
+<body>
+<h2>NGINX Normalizer (редиректы + мультиязычность + табуляция)</h2>
+<p>Вставь конфиг ниже и жми Normalize.</p>
+
+<textarea id="input" placeholder="Вставь конфиг сюда..."></textarea><br/>
+
+<label><input type="checkbox" id="redirects"> Используются редиректы</label><br/>
+<label><input type="checkbox" id="multilang"> Мультиязычный сайт</label><br/>
+<div id="lang-container" style="display:none; margin-top:5px;">
+    <label for="langs">Ключи языков: </label>
+    <input type="text" id="langs" placeholder="например: ru en de">
+</div>
+
+<button id="run">Normalize</button>
+<pre id="out"></pre>
+
+<script>
+    (function(){
+        const OLD_STATIC = `location ~* ^.+\\.(jpg|jpeg|gif|png|svg|js|css|mp3|ogg|mpe?g|avi|zip|gz|bz2?|rar|swf|webp|woff|woff2)$ {
+\t\t\texpires 24h;
+\t\t}`;
+        const NEW_STATIC =
+            `location ~* ^.+\\.(jpg|jpeg|gif|png|svg|js|css|mp3|ogg|mpe?g|avi|zip|gz|bz2?|rar|swf|webp|woff|woff2)$ {
+        add_header Cache-Control "public, max-age=3153600, immutable";
+        expires 1y;
+        add_header Last-Modified $date_gmt;
+        etag on;
+    }`;
+
+        const MODX_BLOCK =
+            `    location @modx {
+        rewrite ^/(.*)$ /index.php?q=$1&$args last;
+    }`;
+
+        function ensureTryFiles(conf){
+            return conf.replace(/location\s*\/\s*{\s*/g, (m, off, str) => {
+                const after = str.slice(off + m.length, off + m.length + 100);
+                if (/try_files\s+\$uri\s+\$uri\/\s+@modx;/.test(after)) return m;
+                return m + '    try_files $uri $uri/ @modx;\n';
+            });
+        }
+
+        function replaceStaticFlexible(conf){
+            return conf.replace(OLD_STATIC, NEW_STATIC);
+        }
+
+        function insertModx(conf){
+            let i = 0, res = '';
+            while (i < conf.length) {
+                const start = conf.indexOf('server', i);
+                if (start === -1) { res += conf.slice(i); break; }
+                res += conf.slice(i, start);
+                const brace = conf.indexOf('{', start);
+                if (brace === -1) { res += conf.slice(start); break; }
+                let depth = 1, j = brace + 1;
+                while (j < conf.length && depth > 0) {
+                    if (conf[j] === '{') depth++;
+                    else if (conf[j] === '}') depth--;
+                    j++;
+                }
+                let block = conf.slice(start, j);
+                if (!/location\s+@modx\s*{/.test(block)) {
+                    block = block.replace(/\}\s*$/, MODX_BLOCK + '\n}');
+                }
+                res += block;
+                i = j;
+            }
+            return res;
+        }
+
+        function insertRedirectInclude(conf) {
+            if (!document.getElementById('redirects').checked) return conf;
+            return conf.replace(/server\s*{[\s\S]*?}/g, (block) => {
+                const domainMatch = block.match(/server_name\s+([^\s;]+)/);
+                if (!domainMatch) return block;
+                const domain = domainMatch[1];
+                const redirectLine = `include /var/www/www-root/data/www/${domain}/redirects.conf;`;
+                if (block.includes(redirectLine)) return block;
+                return block.replace(
+                    /(include\s+\/etc\/nginx\/users-resources\/www-root\/\*\.conf;)/,
+                    `$1\n    ${redirectLine}`
+                );
+            });
+        }
+
+        function insertMultilang(conf) {
+            if (!document.getElementById('multilang').checked) return conf;
+
+            let langsInput = document.getElementById('langs').value.trim();
+            let keys = ['web'];
+            if (langsInput.length > 0) {
+                keys = keys.concat(langsInput.split(/\s+/));
+            }
+            const group = keys.join('|');
+
+            const block =
+                `    location ~ ^/(${group}) {
+        rewrite ^/(${group})/(favicon.ico|assets.*)$ /$3 redirect;
+        rewrite ^/(${group})/(.*)$ /?cultureKey=$1&q=$4 break;
+        try_files $uri $uri/ @modx;
+    }`;
+
+            // вставляем перед location /
+            return conf.replace(/(location\s*\/\s*{)/g, block + '\n\n    $1');
+        }
+
+        function tidyIndentation(conf) {
+            return conf
+                .replace(/location\s*\/\s*{([^}]*)}/g, (m, inner) => {
+                    const lines = inner
+                        .split('\n')
+                        .map(line => line.trim())
+                        .filter(l => l.length > 0)
+                        .map(l => '        ' + l);
+                    return 'location / {\n' + lines.join('\n') + '\n    }';
+                })
+                .replace(/\n{3,}/g, '\n\n');
+        }
+
+        document.getElementById('multilang').addEventListener('change', (e) => {
+            document.getElementById('lang-container').style.display = e.target.checked ? 'block' : 'none';
+        });
+
+        document.getElementById('run').onclick = () => {
+            let conf = document.getElementById('input').value;
+            conf = ensureTryFiles(conf);
+            conf = replaceStaticFlexible(conf);
+            conf = replaceStaticFlexible(conf);
+            conf = insertRedirectInclude(conf);
+            conf = insertMultilang(conf);
+            conf = insertModx(conf);
+            conf = tidyIndentation(conf);
+            conf = conf.replace(/\t/g, '    ');
+            document.getElementById('out').textContent = conf.trim();
+        };
+    })();
+</script>
+</body>
+</html>
