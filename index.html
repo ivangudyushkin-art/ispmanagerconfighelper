@@ -109,8 +109,8 @@
 
             const block =
                 `    location ~ ^/(${group}) {
-        rewrite ^/(${group})/(favicon.ico|assets.*)$ /$3 redirect;
-        rewrite ^/(${group})/(.*)$ /?cultureKey=$1&q=$4 break;
+        rewrite ^/(${group})/(favicon.ico|assets.*)$ /$2 redirect;
+        rewrite ^/(${group})/(.*)$ /?cultureKey=$1&q=$2 break;
         try_files $uri $uri/ @modx;
     }`;
 
